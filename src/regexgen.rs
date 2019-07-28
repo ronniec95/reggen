@@ -106,14 +106,18 @@ fn process_repeat<'a>(iter: &mut impl Iterator<Item = &'a u8>) -> (i32, i32) {
 
 fn process_select<'a>(
     iter: &mut impl Iterator<Item = &'a u8>,
-    parent: &mut Vec<Node>,
-    ends: &mut Vec<u8>,
-) {
-    let mut select = Vec::with_capacity(8);
+    ends: &mut Vec<u8>) -> Node {
     ends.push(b'|');
-    process_seq(iter, &mut select, ends);
+    let mut select = Vec::new();
+    while let Some(ch) = iter.next() {        
+        select.push(process_seq(iter, ends));
+        match ch {
+            b'|' => continue,
+            _ => break,
+        }
+    }
     ends.pop();
-    parent.push(Node::Select(select, None));
+    Node::Select(select, None)
 }
 
 fn process_range<'a>(iter: &mut impl Iterator<Item = &'a u8>, to: &mut u8) {
@@ -227,26 +231,23 @@ fn is_sub_expr<'a>(iter: &mut impl Iterator<Item = &'a u8>) -> u8 {
 
 fn process_group<'a>(
     iter: &mut impl Iterator<Item = &'a u8>,
-    parent: &mut Vec<Node>,
     ends: &mut Vec<u8>,
-) {
+) -> Node {
     let mut group = Vec::new();
     ends.push(b')');
     let mark = is_sub_expr(iter);
-    process_seq(iter, &mut group, ends);
+    group.push(process_seq(iter, ends));
     ends.pop();
     if !group.is_empty() {
-        parent.push(Node::Group(group, mark as usize, None));
-        return;
+        return Node::Group(group, mark as usize, None);
     }
-    parent.push(Node::Text(b'(', None));
+    return Node::Text(b'(', None);
 }
 
 fn process_seq<'a>(
     iter: &mut impl Iterator<Item = &'a u8>,
-    parent: &mut Vec<Node>,
     ends: &mut Vec<u8>,
-) {
+) -> Node {
     let mut seq = Vec::new();
     let mut node: Option<Node> = None;
     let mut begin = true;
@@ -272,7 +273,6 @@ fn process_seq<'a>(
         // Add the node to the parent sequence
         if let Some(n) = node {
             seq.push(n);
-            node = None;
         }
         // Check if we are at an end of a sequence or group
         if let Some(e) = ends.last() {
@@ -280,25 +280,28 @@ fn process_seq<'a>(
                 break;
             }
         }
-        match ch {
-            b'|' => process_select(iter, parent, ends),
-            b'$' => node = Some(Node::Edge(false)),
-            b'.' => node = Some(Node::Charset(vec![b'\n'], true, None)),
-            b'[' => node = Some(process_set(iter, ends)),
-            b'(' => process_group(iter, parent, ends),
-            b'\\' => parent.push(process_slash(iter, true)),
-            _ => node = Some(Node::Text(*ch, None)),
+        node = match ch {
+            b'|' => Some(process_select(iter, ends)),
+            b'$' => Some(Node::Edge(false)),
+            b'.' => Some(Node::Charset(vec![b'\n'], true, None)),
+            b'[' => Some(process_set(iter, ends)),
+            b'(' => Some(process_group(iter,  ends)),
+            b'\\' => Some(process_slash(iter, true)),
+            _ => Some(Node::Text(*ch, None)),
+        };
+        if let Some(n) = node {
+            seq.push(n);
+            node = None;
         }
     }
-    parent.push(Node::Seq(seq, None));
+    Node::Seq(seq, None)
 }
 
 pub fn parse<'a>(re: Vec<u8>) -> Result<(), ParseError> {
     let re = pre_parse(re);
-    let mut parent: Vec<Node> = Vec::with_capacity(64);
     let mut iter = re.iter();
     let mut ends = Vec::with_capacity(16);
-    process_seq(&mut iter, &mut parent, &mut ends);
+    let parent = process_seq(&mut iter, &mut ends);
     Ok(())
 }
 
@@ -418,7 +421,7 @@ mod tests {
         );
     }
     #[test]
-    fn seq_test_a() {
+    fn set_test_a() {
         assert_eq!(
             super::process_set(&mut r"a-z".as_bytes().iter(), &mut Vec::new()),
             Node::Charset((b'a'..=b'z').collect::<Vec<_>>(), true, None)
@@ -433,14 +436,14 @@ mod tests {
         );
     }
     #[test]
-    fn seq_test_b() {
+    fn set_test_b() {
         assert_eq!(
             super::process_set(&mut r"e-l".as_bytes().iter(), &mut Vec::new()),
             Node::Charset((b'e'..=b'l').collect::<Vec<_>>(), true, None)
         );
     }
     #[test]
-    fn seq_test_c() {
+    fn set_test_c() {
         assert_eq!(
             super::process_set(&mut r"^e-l".as_bytes().iter(), &mut Vec::new()),
             Node::Charset((b'e'..=b'l').collect::<Vec<_>>(), false, None)
@@ -451,7 +454,7 @@ mod tests {
         );
     }
     #[test]
-    fn seq_test_d() {
+    fn set_test_d() {
         assert_eq!(
             super::process_set(&mut r"hello|".as_bytes().iter(), &mut Vec::new()),
             Node::Charset("hello".as_bytes().to_vec(), true, None)
