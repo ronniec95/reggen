@@ -1,0 +1,3 @@
+rls*.log
+.history/*
+target/
