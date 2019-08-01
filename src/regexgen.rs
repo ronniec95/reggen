@@ -601,40 +601,40 @@ mod tests {
                 &mut r"?:https|ftp)://".as_bytes().iter().peekable(),
                 &mut Vec::new()
             ),
-                Node::Group(
-                    vec![Node::Seq(
-                        vec![
-                            Node::Text(104, None),
-                            Node::Text(116, None),
-                            Node::Text(116, None),
-                            Node::Text(112, None),
-                            Node::Text(115, None),
-                            Node::Select(
-                                vec![
-                                    Node::Seq(
-                                        vec![
-                                            Node::Text(102, None),
-                                            Node::Text(116, None),
-                                            Node::Text(112, None)
-                                        ],
-                                        None
-                                    ),
-                                    Node::Seq(
-                                        vec![
-                                            Node::Text(58, None),
-                                            Node::Text(47, None),
-                                            Node::Text(47, None)
-                                        ],
-                                        None
-                                    )
-                                ],
-                                None
-                            )
-                        ],
-                        None
-                    )],
-                    0,
+            Node::Group(
+                vec![Node::Seq(
+                    vec![
+                        Node::Text(104, None),
+                        Node::Text(116, None),
+                        Node::Text(116, None),
+                        Node::Text(112, None),
+                        Node::Text(115, None),
+                        Node::Select(
+                            vec![
+                                Node::Seq(
+                                    vec![
+                                        Node::Text(102, None),
+                                        Node::Text(116, None),
+                                        Node::Text(112, None)
+                                    ],
+                                    None
+                                ),
+                                Node::Seq(
+                                    vec![
+                                        Node::Text(58, None),
+                                        Node::Text(47, None),
+                                        Node::Text(47, None)
+                                    ],
+                                    None
+                                )
+                            ],
+                            None
+                        )
+                    ],
                     None
+                )],
+                0,
+                None
             )
         );
     }

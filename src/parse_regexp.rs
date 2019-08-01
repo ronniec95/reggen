@@ -96,10 +96,6 @@ fn token_to_char(token: &Token) -> u8 {
     }
 }
 
-
-
-
-
 fn is_infinite(node: &Node) -> bool {
     match node {
         Node::Repeat(Token::Question) => (1 & INFINITE) != 0,
@@ -180,7 +176,7 @@ where
         match n {
             Token::Question => {
                 piter.next();
-                if let Some(p) = piter.peek()  {
+                if let Some(p) = piter.peek() {
                     dbg!(&p);
                     match p {
                         Token::Equals | Token::Colon | Token::Not | Token::GreaterThan => {
@@ -660,6 +656,11 @@ mod tests {
                     .to_vec()
             )
         );
+    }
+    #[test]
+    fn parse_39() {
+        let regex = b"(a-z|A-Z|:;+)[cd]{2}\\1";
+        println!("{:?}", super::parse(b"(a-z|A-Z|:;+)[cd]{2}\\1".to_vec()));
     }
 
 }
