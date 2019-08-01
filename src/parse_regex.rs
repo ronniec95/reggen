@@ -1,7 +1,10 @@
 use crate::error::*;
+use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
+use nom::combinator::map;
 use nom::multi::{many1, separated_list};
-use nom::sequence::{delimited, tuple};
+use nom::number::complete::le_u16;
+use nom::sequence::{delimited, preceded, terminated, tuple};
 use nom::{error::ErrorKind, Err, IResult};
 
 #[derive(Debug, PartialEq)]
@@ -10,6 +13,8 @@ enum Node {
     Range(Vec<u8>),
     Alternation(Vec<Node>),
     Group(Box<Node>),
+    Repeat(u16, u16),
+    Alt,
 }
 
 fn parse_range(input: &[u8]) -> IResult<&[u8], Node> {
@@ -24,6 +29,41 @@ fn parse_range(input: &[u8]) -> IResult<&[u8], Node> {
     } else {
         Err(Err::Error((input, ErrorKind::Complete)))
     }
+}
+
+fn range_repeater(input: &[u8]) -> IResult<&[u8], Node> {
+    alt((
+        map(delimited(tag("{"), le_u16, tag("}")), |v| Node::Repeat(v,v)),
+        map(delimited(tag("{"), terminated(le_u16,tag(",")), tag("}")), |v| Node::Repeat(v,65535)),
+        map(delimited(tag("{"), preceded(tag(","),le_u16), tag("}")), |v| Node::Repeat(0,v)),
+        map(delimited(tag("{"), tuple((le_u16,tag(","),le_u16)), tag("}")), |(s,_,e)| Node::Repeat(s,e)),
+    ))
+//        map(delimited(tag("{"), terminated(le_u16,tag(",")), tag("}")), |v| Node::Repeat(v,65536))
+
+    (input)
+}
+
+fn repeater(input: &[u8]) -> IResult<&[u8], Node> {
+    alt((
+        //  map(tag("*"), |_| Node::Repeat(0, 65535)),
+        //  map(tag("?"), |_| Node::Repeat(0, 1)),
+        //  map(tag("+"), |_| Node::Repeat(1, 65535)),
+        map(delimited(tag("{"), le_u16, tag("}")), |v| {
+            Node::Repeat(v, v)
+        }),
+                map(
+            delimited(tag("{"), terminated(le_u16, tag(",")), tag("}")),
+            |v| Node::Repeat(v, 65535),
+        ),
+        /*map(
+            delimited(tag("{"), preceded(tag(","), le_u16), tag("}")),
+            |v| Node::Repeat(0, v),
+        ),
+        map(
+            delimited(tag("{"), tuple((le_u16, tag(","), le_u16)), tag("}")),
+            |(s, _, e)| Node::Repeat(s, e),
+        ),*/
+    ))(input)
 }
 
 fn multi_range(input: &[u8]) -> IResult<&[u8], Node> {
@@ -49,7 +89,9 @@ fn parse_group(input: &[u8]) -> IResult<&[u8], Node> {
     Ok((rest, Node::Group(Box::new(v))))
 }
 
-pub fn parse(re: &[u8]) {}
+pub fn parse(re: &[u8]) {
+    parse_group(re).expect("");
+}
 
 #[cfg(test)]
 mod test {
@@ -115,5 +157,13 @@ mod test {
                 ])
             ))
         );
+    }
+
+    #[test]
+    fn parse_6() {
+        //assert_eq!(repeater(b"+"), Ok((&[][..], Node::Repeat(1, 65535))));
+        //assert_eq!(repeater(b"*"), Ok((&[][..], Node::Repeat(0, 65535))));
+        //assert_eq!(repeater(b"?"), Ok((&[][..], Node::Repeat(0, 1))));
+        assert_eq!(repeater(b"{8}"), Ok((&[][..], Node::Repeat(8, 8))));
     }
 }
