@@ -1,20 +1,35 @@
 use crate::error::*;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take};
-use nom::combinator::map;
+use nom::character::complete::digit1;
+use nom::combinator::{map, opt};
 use nom::multi::{many1, separated_list};
-use nom::number::complete::le_u16;
-use nom::sequence::{delimited, preceded, terminated, tuple};
+use nom::sequence::{delimited, pair, preceded, terminated, tuple};
 use nom::{error::ErrorKind, Err, IResult};
+use num_traits::{cast, Num};
+use std::str::from_utf8_unchecked;
+
+#[derive(Debug, PartialEq)]
+struct Repeat<T: Num> {
+    min: T,
+    max: T,
+}
+
+impl<T> Repeat<T>
+where
+    T: Num,
+{
+    fn new(min: T, max: T) -> Self {
+        Self { min, max }
+    }
+}
 
 #[derive(Debug, PartialEq)]
 enum Node {
     ExRange(Vec<u8>),
     Range(Vec<u8>),
-    Alternation(Vec<Node>),
-    Group(Box<Node>),
-    Repeat(u16, u16),
-    Alt,
+    Alternation(Vec<Node>, Option<Repeat<u16>>),
+    Group(Box<Node>, Option<Repeat<u16>>),
 }
 
 fn parse_range(input: &[u8]) -> IResult<&[u8], Node> {
@@ -31,38 +46,46 @@ fn parse_range(input: &[u8]) -> IResult<&[u8], Node> {
     }
 }
 
-fn range_repeater(input: &[u8]) -> IResult<&[u8], Node> {
-    alt((
-        map(delimited(tag("{"), le_u16, tag("}")), |v| Node::Repeat(v,v)),
-        map(delimited(tag("{"), terminated(le_u16,tag(",")), tag("}")), |v| Node::Repeat(v,65535)),
-        map(delimited(tag("{"), preceded(tag(","),le_u16), tag("}")), |v| Node::Repeat(0,v)),
-        map(delimited(tag("{"), tuple((le_u16,tag(","),le_u16)), tag("}")), |(s,_,e)| Node::Repeat(s,e)),
-    ))
-//        map(delimited(tag("{"), terminated(le_u16,tag(",")), tag("}")), |v| Node::Repeat(v,65536))
+fn repeater<T>(input: &[u8]) -> IResult<&[u8], Repeat<T>>
+where
+    T: Num,
+    T: std::str::FromStr,
+    T: From<T>,
+    T: Copy,
+    T: num_traits::cast::NumCast,
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
+    let to_type = |v: &[u8]| {
+        let str_num = unsafe { from_utf8_unchecked(v) };
+        str_num.parse::<T>().unwrap()
+    };
 
-    (input)
-}
-
-fn repeater(input: &[u8]) -> IResult<&[u8], Node> {
     alt((
-        //  map(tag("*"), |_| Node::Repeat(0, 65535)),
-        //  map(tag("?"), |_| Node::Repeat(0, 1)),
-        //  map(tag("+"), |_| Node::Repeat(1, 65535)),
-        map(delimited(tag("{"), le_u16, tag("}")), |v| {
-            Node::Repeat(v, v)
+        map(tag("*"), |_| {
+            Repeat::new(cast(0).unwrap(), cast(65535).unwrap())
         }),
-                map(
-            delimited(tag("{"), terminated(le_u16, tag(",")), tag("}")),
-            |v| Node::Repeat(v, 65535),
-        ),
-        /*map(
-            delimited(tag("{"), preceded(tag(","), le_u16), tag("}")),
-            |v| Node::Repeat(0, v),
+        map(tag("?"), |_| {
+            Repeat::new(cast(0).unwrap(), cast(1).unwrap())
+        }),
+        map(tag("+"), |_| {
+            Repeat::new(cast(1).unwrap(), cast(65535).unwrap())
+        }),
+        map(delimited(tag("{"), digit1, tag("}")), move |v| {
+            let v = to_type(v);
+            Repeat::new(v, v)
+        }),
+        map(
+            delimited(tag("{"), terminated(digit1, tag(",")), tag("}")),
+            move |v| Repeat::new(to_type(v), cast(65535).unwrap()),
         ),
         map(
-            delimited(tag("{"), tuple((le_u16, tag(","), le_u16)), tag("}")),
-            |(s, _, e)| Node::Repeat(s, e),
-        ),*/
+            delimited(tag("{"), preceded(tag(","), digit1), tag("}")),
+            move |v| Repeat::new(cast(0).unwrap(), to_type(v)),
+        ),
+        map(
+            delimited(tag("{"), tuple((digit1, tag(","), digit1)), tag("}")),
+            move |(s, _, e)| Repeat::new(to_type(s), to_type(e)),
+        ),
     ))(input)
 }
 
@@ -80,17 +103,30 @@ fn multi_range(input: &[u8]) -> IResult<&[u8], Node> {
 }
 
 fn alternation(input: &[u8]) -> IResult<&[u8], Node> {
-    let (rest, v) = delimited(tag("["), separated_list(tag("|"), multi_range), tag("]"))(input)?;
-    Ok((rest, Node::Alternation(v)))
+    let (rest, (v, repeat)) = pair(
+        delimited(tag("["), separated_list(tag("|"), multi_range), tag("]")),
+        opt(repeater::<u16>),
+    )(input)?;
+    Ok((rest, Node::Alternation(v, repeat)))
 }
 
-fn parse_group(input: &[u8]) -> IResult<&[u8], Node> {
-    let (rest, v) = delimited(tag("("), alternation, tag(")"))(input)?;
-    Ok((rest, Node::Group(Box::new(v))))
+fn group(input: &[u8]) -> IResult<&[u8], Node> {
+    let (rest, (v, repeat)) = pair(
+        delimited(tag("("), alternation, tag(")")),
+        opt(repeater::<u16>),
+    )(input)?;
+    Ok((rest, Node::Group(Box::new(v), repeat)))
+}
+(ch) = input.first() {
+        match ch {
+            b'\\' => Ok(input[1..],Node::Text(b'\\'))
+
+        }
+    }
 }
 
 pub fn parse(re: &[u8]) {
-    parse_group(re).expect("");
+    group(re).expect("");
 }
 
 #[cfg(test)]
@@ -110,10 +146,13 @@ mod test {
             alternation(b"[a-c|d-f]"),
             Ok((
                 &[][..],
-                Node::Alternation(vec![
-                    Node::Range(vec![97, 98, 99]),
-                    Node::Range(vec![100, 101, 102])
-                ])
+                Node::Alternation(
+                    vec![
+                        Node::Range(vec![97, 98, 99]),
+                        Node::Range(vec![100, 101, 102])
+                    ],
+                    None
+                )
             ))
         );
     }
@@ -121,13 +160,19 @@ mod test {
     #[test]
     fn parse_3() {
         assert_eq!(
-            parse_group(b"([a-c|d-f])"),
+            group(b"([a-c|d-f])"),
             Ok((
                 &[][..],
-                Node::Group(Box::new(Node::Alternation(vec![
-                    Node::Range(vec![97, 98, 99]),
-                    Node::Range(vec![100, 101, 102])
-                ])))
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
+                        None
+                    )),
+                    None
+                )
             ))
         );
     }
@@ -135,12 +180,16 @@ mod test {
     #[test]
     fn parse_4() {
         assert_eq!(
-            parse_group(b"([a-cd-f])"),
+            group(b"([a-cd-f])"),
             Ok((
                 &[][..],
-                Node::Group(Box::new(Node::Alternation(vec![Node::Range(vec![
-                    97, 98, 99, 100, 101, 102
-                ])])))
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    None
+                )
             ))
         );
     }
@@ -161,9 +210,142 @@ mod test {
 
     #[test]
     fn parse_6() {
-        //assert_eq!(repeater(b"+"), Ok((&[][..], Node::Repeat(1, 65535))));
-        //assert_eq!(repeater(b"*"), Ok((&[][..], Node::Repeat(0, 65535))));
-        //assert_eq!(repeater(b"?"), Ok((&[][..], Node::Repeat(0, 1))));
-        assert_eq!(repeater(b"{8}"), Ok((&[][..], Node::Repeat(8, 8))));
+        assert_eq!(repeater::<u16>(b"+"), Ok((&[][..], Repeat::new(1, 65535))));
+        assert_eq!(repeater::<u16>(b"*"), Ok((&[][..], Repeat::new(0, 65535))));
+        assert_eq!(repeater::<u16>(b"?"), Ok((&[][..], Repeat::new(0, 1))));
+        assert_eq!(repeater::<u16>(b"{8}"), Ok((&[][..], Repeat::new(8, 8))));
+        assert_eq!(
+            repeater::<u16>(b"{8,}"),
+            Ok((&[][..], Repeat::new(8, 65535)))
+        );
+        assert_eq!(
+            repeater::<u16>(b"{,7892}"),
+            Ok((&[][..], Repeat::new(0, 7892)))
+        );
+        assert_eq!(
+            repeater::<u16>(b"{456,7892}"),
+            Ok((&[][..], Repeat::new(456, 7892)))
+        );
+    }
+
+    #[test]
+    fn parse_7() {
+        assert_eq!(
+            group(b"([a-cd-f])+"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(1, 65535))
+                )
+            ))
+        );
+        assert_eq!(
+            group(b"([a-cd-f])*"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(0, 65535))
+                )
+            ))
+        );
+        assert_eq!(
+            group(b"([a-cd-f])?"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(0, 1))
+                )
+            ))
+        );
+        assert_eq!(
+            group(b"([a-cd-f]){6}"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(6, 6))
+                )
+            ))
+        );
+        assert_eq!(
+            group(b"([a-cd-f]){6,}"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(6, 65535))
+                )
+            ))
+        );
+        assert_eq!(
+            group(b"([a-cd-f]){6,67}"),
+            Ok((
+                &[][..],
+                Node::Group(
+                    Box::new(Node::Alternation(
+                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        None
+                    )),
+                    Some(Repeat::new(6, 67))
+                )
+            ))
+        );
+    }
+    #[test]
+    fn parse_8() {
+        assert_eq!(
+            alternation(b"[a-c|d-f]+"),
+            Ok((
+                &[][..],
+                Node::Alternation(
+                    vec![
+                        Node::Range(vec![97, 98, 99]),
+                        Node::Range(vec![100, 101, 102])
+                    ],
+                    Some(Repeat::new(1, 65535))
+                )
+            ))
+        );
+        assert_eq!(
+            alternation(b"[a-c|d-f]{89,}"),
+            Ok((
+                &[][..],
+                Node::Alternation(
+                    vec![
+                        Node::Range(vec![97, 98, 99]),
+                        Node::Range(vec![100, 101, 102])
+                    ],
+                    Some(Repeat::new(89, 65535))
+                )
+            ))
+        );
+        assert_eq!(
+            alternation(b"[a-c]{89,}"),
+            Ok((
+                &[][..],
+                Node::Alternation(
+                    vec![Node::Range(vec![97, 98, 99]),],
+                    Some(Repeat::new(89, 65535))
+                )
+            ))
+        );
     }
 }
