@@ -1,11 +1,10 @@
-use crate::error::*;
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take};
-use nom::character::complete::digit1;
+use nom::bytes::complete::{is_a, tag, take};
+use nom::character::complete::{alpha1, digit1};
 use nom::combinator::{map, opt};
 use nom::multi::{many1, separated_list};
 use nom::sequence::{delimited, pair, preceded, terminated, tuple};
-use nom::{error::ErrorKind, Err, IResult};
+use nom::{error::ErrorKind, IResult};
 use num_traits::{cast, Num};
 use std::str::from_utf8_unchecked;
 
@@ -30,29 +29,33 @@ enum Node {
     Range(Vec<u8>),
     Alternation(Vec<Node>, Option<Repeat<u16>>),
     Group(Box<Node>, Option<Repeat<u16>>),
+    Text(Vec<u8>),
+    Ref(u8),
 }
 
-fn parse_range(input: &[u8]) -> IResult<&[u8], Node> {
-    if !input.is_empty() {
-        if input[0] == b'^' {
-            let (rest, (s, _, e)) = tuple((take(1usize), tag("-"), take(1usize)))(&input[1..])?;
-            Ok((rest, Node::ExRange((s[0]..=e[0]).collect::<Vec<_>>())))
-        } else {
-            let (rest, (s, _, e)) = tuple((take(1usize), tag("-"), take(1usize)))(input)?;
-            Ok((rest, Node::Range((s[0]..=e[0]).collect::<Vec<_>>())))
-        }
-    } else {
-        Err(Err::Error((input, ErrorKind::Complete)))
-    }
+fn text(input: &[u8]) -> IResult<&[u8], Node> {
+    const ALPHANUM: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    map(is_a(ALPHANUM), |s: &[u8]| Node::Text(s.to_vec()))(input)
+}
+
+fn range(input: &[u8]) -> IResult<&[u8], Node> {
+    alt((
+        map(
+            preceded(tag("^"), tuple((take(1usize), tag("-"), take(1usize)))),
+            |(s, _, e): (&[u8], &[u8], &[u8])| Node::ExRange((s[0]..=e[0]).collect::<Vec<_>>()),
+        ),
+        map(
+            tuple((take(1usize), tag("-"), take(1usize))),
+            |(s, _, e): (&[u8], &[u8], &[u8])| Node::Range((s[0]..=e[0]).collect::<Vec<_>>()),
+        ),
+        backslash,
+        text,
+    ))(input)
 }
 
 fn repeater<T>(input: &[u8]) -> IResult<&[u8], Repeat<T>>
 where
-    T: Num,
-    T: std::str::FromStr,
-    T: From<T>,
-    T: Copy,
-    T: num_traits::cast::NumCast,
+    T: Num + std::str::FromStr + From<T> + Copy + num_traits::cast::NumCast,
     <T as std::str::FromStr>::Err: std::fmt::Debug,
 {
     let to_type = |v: &[u8]| {
@@ -89,17 +92,9 @@ where
     ))(input)
 }
 
-fn multi_range(input: &[u8]) -> IResult<&[u8], Node> {
-    let (rest, v) = many1(parse_range)(input)?;
-    let v = v
-        .iter()
-        .map(|rng| match rng {
-            Node::Range(v) => v.clone(),
-            _ => vec![],
-        })
-        .flatten()
-        .collect::<Vec<_>>();
-    Ok((rest, Node::Range(v)))
+fn multi_range(input: &[u8]) -> IResult<&[u8], Vec<Node>> {
+    let (rest, v) = many1(range)(input)?;
+    Ok((rest, v))
 }
 
 fn alternation(input: &[u8]) -> IResult<&[u8], Node> {
@@ -107,6 +102,7 @@ fn alternation(input: &[u8]) -> IResult<&[u8], Node> {
         delimited(tag("["), separated_list(tag("|"), multi_range), tag("]")),
         opt(repeater::<u16>),
     )(input)?;
+    let v = v.into_iter().flatten().map(|v| v).collect();
     Ok((rest, Node::Alternation(v, repeat)))
 }
 
@@ -117,16 +113,46 @@ fn group(input: &[u8]) -> IResult<&[u8], Node> {
     )(input)?;
     Ok((rest, Node::Group(Box::new(v), repeat)))
 }
-(ch) = input.first() {
-        match ch {
-            b'\\' => Ok(input[1..],Node::Text(b'\\'))
 
-        }
-    }
+fn backslash(input: &[u8]) -> IResult<&[u8], Node> {
+    alt((
+        map(tag("\\"), |_| Node::Range(vec![b'\\'])),
+        map(tag("\\w"), |_| {
+            let ext = (b'A'..b'Z').chain(b'a'..b'z').chain(b'0'..b'9').collect();
+            Node::Range(ext)
+        }),
+        map(tag("\\d"), |_| {
+            let ext = (b'0'..b'9').collect();
+            Node::Range(ext)
+        }),
+        map(tag("\\s"), |_| Node::Range(vec![b'\t', b'\r', b'\n', b' '])),
+        map(tag("\\W"), |_| {
+            let ext = (b'A'..b'Z').chain(b'a'..b'z').chain(b'0'..b'9').collect();
+            Node::ExRange(ext)
+        }),
+        map(tag("\\D"), |_| {
+            let ext = (b'0'..b'9').collect();
+            Node::ExRange(ext)
+        }),
+        map(tag("\\S"), |_| {
+            Node::ExRange(vec![b'\t', b'\r', b'\n', b' '])
+        }),
+        map(tag("\\|"), |_| Node::Range(vec![b'|'])),
+        map(terminated(tag("\\"), digit1), |dig: &[u8]| {
+            Node::Ref(std::str::from_utf8(dig).unwrap().parse::<u8>().unwrap())
+        }),
+        map(terminated(tag("\\"), alpha1), |v: &[u8]| {
+            Node::Range(v.to_vec())
+        }),
+    ))(input)
+}
+
+fn sequence(input: &[u8]) -> IResult<&[u8], Vec<Node>> {
+    many1(alt((text, group, alternation, backslash)))(input)
 }
 
 pub fn parse(re: &[u8]) {
-    group(re).expect("");
+    sequence(re).expect("");
 }
 
 #[cfg(test)]
@@ -136,7 +162,7 @@ mod test {
     #[test]
     fn parse_1() {
         assert_eq!(
-            parse_range(b"A-Z"),
+            range(b"A-Z"),
             Ok((&[][..], Node::Range((b'A'..=b'Z').collect::<Vec<_>>())))
         );
     }
@@ -185,7 +211,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     None
@@ -200,10 +229,14 @@ mod test {
             multi_range(b"a-cA-Z0-9"),
             Ok((
                 &[][..],
-                Node::Range(vec![
-                    97, 98, 99, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-                    82, 83, 84, 85, 86, 87, 88, 89, 90, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57
-                ])
+                vec![
+                    Node::Range(vec![97, 98, 99]),
+                    Node::Range(vec![
+                        65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83,
+                        84, 85, 86, 87, 88, 89, 90
+                    ]),
+                    Node::Range(vec![48, 49, 50, 51, 52, 53, 54, 55, 56, 57])
+                ]
             ))
         );
     }
@@ -236,7 +269,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(1, 65535))
@@ -249,7 +285,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(0, 65535))
@@ -262,7 +301,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(0, 1))
@@ -275,7 +317,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(6, 6))
@@ -288,7 +333,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(6, 65535))
@@ -301,7 +349,10 @@ mod test {
                 &[][..],
                 Node::Group(
                     Box::new(Node::Alternation(
-                        vec![Node::Range(vec![97, 98, 99, 100, 101, 102])],
+                        vec![
+                            Node::Range(vec![97, 98, 99]),
+                            Node::Range(vec![100, 101, 102])
+                        ],
                         None
                     )),
                     Some(Repeat::new(6, 67))
@@ -348,4 +399,50 @@ mod test {
             ))
         );
     }
+
+    #[test]
+    fn parse_9() {
+        use nom::bytes::complete::take_while1;
+        assert_eq!(
+            take_while1::<_, &[u8], (&[u8], ErrorKind)>(|c| !(c == b'^' || c == b'\\'))(
+                b"dabc\\def"
+            ),
+            Ok((&b"\\def"[..], &b"dabc"[..]))
+        );
+        assert_eq!(
+            take_while1::<_, &[u8], (&[u8], ErrorKind)>(|c| !(c == b'^' || c == b'\\'))(
+                b"dabc^def"
+            ),
+            Ok((&b"^def"[..], &b"dabc"[..]))
+        );
+    }
+    #[test]
+    fn parse_10() {
+        assert_eq!(
+            range(b"foobar"),
+            Ok((&[][..], Node::Text(b"foobar".to_vec())))
+        );
+        assert_eq!(
+            alternation(b"[foobar|https]"),
+            Ok((
+                &[][..],
+                Node::Alternation(
+                    vec![
+                        Node::Text(b"foobar".to_vec()),
+                        Node::Text(b"https".to_vec())
+                    ],
+                    None
+                )
+            ))
+        );
+    }
 }
+/*
+- 07900492482
+====
+2400
+3600
+====
+Mobeen
+====
+*/
