@@ -28,7 +28,7 @@ enum Node {
     ExRange(Vec<u8>),
     Range(Vec<u8>),
     Alternation(Vec<Node>, Option<Repeat<u16>>),
-    Group(Box<Node>, Option<Repeat<u16>>),
+    Group(Vec<Node>, Option<Repeat<u16>>),
     Text(Vec<u8>),
     Ref(u8),
 }
@@ -106,32 +106,35 @@ fn alternation(input: &[u8]) -> IResult<&[u8], Node> {
     Ok((rest, Node::Alternation(v, repeat)))
 }
 
-fn group(input: &[u8]) -> IResult<&[u8], Node> {
-    let (rest, (v, repeat)) = pair(
-        delimited(tag("("), alternation, tag(")")),
-        opt(repeater::<u16>),
-    )(input)?;
-    Ok((rest, Node::Group(Box::new(v), repeat)))
+fn set(input: &[u8]) -> IResult<&[u8], Node> {
+    let (rest, v) = separated_list(tag("|"), multi_range)(input)?;
+    let v = v.into_iter().flatten().collect();
+    Ok((rest, Node::Alternation(v, None)))
 }
 
 fn backslash(input: &[u8]) -> IResult<&[u8], Node> {
     alt((
-        map(tag("\\"), |_| Node::Range(vec![b'\\'])),
         map(tag("\\w"), |_| {
-            let ext = (b'A'..b'Z').chain(b'a'..b'z').chain(b'0'..b'9').collect();
+            let ext = (b'A'..=b'Z')
+                .chain(b'a'..=b'z')
+                .chain(b'0'..=b'9')
+                .collect();
             Node::Range(ext)
         }),
         map(tag("\\d"), |_| {
-            let ext = (b'0'..b'9').collect();
+            let ext = (b'0'..=b'9').collect();
             Node::Range(ext)
         }),
         map(tag("\\s"), |_| Node::Range(vec![b'\t', b'\r', b'\n', b' '])),
         map(tag("\\W"), |_| {
-            let ext = (b'A'..b'Z').chain(b'a'..b'z').chain(b'0'..b'9').collect();
+            let ext = (b'A'..=b'Z')
+                .chain(b'a'..=b'z')
+                .chain(b'0'..=b'9')
+                .collect();
             Node::ExRange(ext)
         }),
         map(tag("\\D"), |_| {
-            let ext = (b'0'..b'9').collect();
+            let ext = (b'0'..=b'9').collect();
             Node::ExRange(ext)
         }),
         map(tag("\\S"), |_| {
@@ -144,7 +147,16 @@ fn backslash(input: &[u8]) -> IResult<&[u8], Node> {
         map(terminated(tag("\\"), alpha1), |v: &[u8]| {
             Node::Range(v.to_vec())
         }),
+        map(tag("\\"), |_| Node::Range(vec![b'\\'])),
     ))(input)
+}
+
+fn group(input: &[u8]) -> IResult<&[u8], Node> {
+    let (rest, (v, repeat)) = pair(
+        delimited(tag("("), sequence, tag(")")),
+        opt(repeater::<u16>),
+    )(input)?;
+    Ok((rest, Node::Group(v, repeat)))
 }
 
 fn sequence(input: &[u8]) -> IResult<&[u8], Vec<Node>> {
@@ -190,13 +202,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     None
                 )
             ))
@@ -210,13 +222,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     None
                 )
             ))
@@ -268,13 +280,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(1, 65535))
                 )
             ))
@@ -284,13 +296,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(0, 65535))
                 )
             ))
@@ -300,13 +312,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(0, 1))
                 )
             ))
@@ -316,13 +328,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(6, 6))
                 )
             ))
@@ -332,13 +344,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(6, 65535))
                 )
             ))
@@ -348,13 +360,13 @@ mod test {
             Ok((
                 &[][..],
                 Node::Group(
-                    Box::new(Node::Alternation(
+                    vec![Node::Alternation(
                         vec![
                             Node::Range(vec![97, 98, 99]),
                             Node::Range(vec![100, 101, 102])
                         ],
                         None
-                    )),
+                    )],
                     Some(Repeat::new(6, 67))
                 )
             ))
@@ -435,6 +447,42 @@ mod test {
                 )
             ))
         );
+    }
+    #[test]
+    fn parse_11() {
+        let res: Vec<u8> = (b'A'..=b'Z')
+            .chain(b'a'..=b'z')
+            .chain(b'0'..=b'9')
+            .collect();
+        assert_eq!(
+            sequence(b"\\wAbcdef"),
+            Ok((
+                &[][..],
+                vec![Node::Range(res), Node::Text(b"Abcdef".to_vec())]
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_12() {
+        assert_eq!(
+            set(b"a-c|g-k"),
+            Ok((
+                &[][..],
+                Node::Alternation(
+                    vec![
+                        Node::Range(vec![97, 98, 99]),
+                        Node::Range(vec![103, 104, 105, 106, 107])
+                    ],
+                    None
+                )
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_13() {
+        println!("{:?}", super::parse(b"([a-z|A-Z])"));
     }
 }
 /*
